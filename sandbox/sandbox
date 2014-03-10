@@ -1,0 +1,185 @@
+	else if(!strcmp(split,"QUERY")) {
+		//arg1: table-> arg2: predicates. arg3: max_number_of_keys.
+		char str[MAX_CMD_LEN];
+
+		if(!*auth) {
+			errno = ERR_NOT_AUTHENTICATED;
+			sprintf(errstr, "%d", errno);
+			strcpy(str, errstr);
+			strcat(str, "0 FAIL\n");
+			sendall(sock, str, strlen(str));
+			return -1;
+		}
+		else {
+			gettimeofday(&start, NULL);
+			Table* table=table_search(arg1, database);
+
+    			if(table) {
+    				char predicate[MAX_COLNAME_LEN+MAX_VALUE_LEN];
+    				char predicate_column[MAX_COLNAME_LEN];
+    				char predicate_value[MAX_VALUE_LEN];
+                    int max_keys=atoi(arg3);
+    				char predicate_columns[MAX_COLUMNS_PER_TABLE][MAX_COLNAME_LEN];
+    				char predicate_values[MAX_COLUMNS_PER_TABLE][MAX_VALUE_LEN];
+    				int predicate_operators[MAX_COLUMNS_PER_TABLE];
+    				int predicate_indices[MAX_COLUMNS_PER_TABLE];
+
+    				strcpy(predicate, strtok(arg2, ","));
+    				int i;
+    			    while(i<MAX_DATABASE_LEN && strcmp(arg2, "")){
+    			    	int predicate_operator=0; //0 represents no operator, 1 represents a less-than comparison, 2 represents a equals comparison, 3 represents a greater-than comparison.
+    			    	int u=0;
+    			    	//First, remove any whitespaces from the predicate input.
+    			    	int nowhitespace_index=0;
+    			    	while (predicate[u]){
+    			    		if(u!=' '){
+    			    			predicate[nowhitespace_index]=predicate[u];
+    			    			nowhitespace_index++;
+    			    		}
+    			    	}
+	                    predicate[nowhitespace_index]='\0';
+
+	                    //Determines the operator of this predicate.
+    			    	u=0;
+    			    	while(predicate[u]){
+
+    			    		if(u=='<'){
+    			    			predicate_operator=1;
+    			    			break;
+    			    		}
+    			    		if(u=='='){
+    			    			predicate_operator=2;
+    			    			break;
+    			    		}
+    			    		if(u=='>'){
+    			    			predicate_operator=3;
+    			    			break;
+    			    		}
+    			    		u++;
+    			    	}
+
+    			    	//Extracts the column and value from the predicate.
+    			    	strncpy(predicate_column, predicate, u-2);
+    			    	printf("%s\n", predicate_column);
+    			    	strncpy(predicate_value, predicate+u-1, sizeof(predicate_value));
+    			    	printf("%s\n", predicate_value);
+
+    			    	//Checks if the predicate's column exists in the structure, and if yes, if the datatype of that column matches the predicate's value.
+    			    	int isBadColumnorValue=0;
+    			    	int column_index=column_search(table, predicate_column);
+    			    	if(column_index==-1){
+    			    		isBadColumnorValue=1;
+    			    	}
+    			    	else if(strcmp(table->datatypes[column_index], "int")){
+    			    		if(!isNum(predicate_value))
+                            isBadColumnorValue=1;
+    			    	}
+    			    	else if(strcmp(table->datatypes[column_index], "char")){
+    			    		if(table->datasizes[column_index]<sizeof(predicate_value)+1)
+                            isBadColumnorValue=1;
+    			    	}
+
+    			    	//Checks if the predicate is valid.
+    			    	if(predicate_operator==0||isBadColumnorValue){//No operator detected, which means a invalid parameter.
+    						errno = ERR_INVALID_PARAM;
+    						sprintf(errstr, "%d", errno);
+    						strcpy(str, errstr);
+    						strcat(str, "0 FAIL\n");
+    						sendall(sock, str, strlen(str));
+    						return -1;
+    			    	}
+    			    	//All good, copying decomposed values of this predicate into arrays for later use.
+
+                        strncpy(predicate_columns[i], predicate_column, sizeof(predicate_columns[i]));
+                        predicate_operators[i]=predicate_operator;
+                        predicate_indices[i]=column_index;
+    			    	strncpy(predicate_values[i], predicate_value, sizeof(predicate_columns[i]));
+    			    	char* temp=strtok(NULL, ",");
+    			    	if(*temp)
+    			    	strncpy(predicate, temp, sizeof(predicate));
+                        i++;
+    			    }
+    			    //Now, we traverse through the table's entries to determine the entries that meets the predicates and store them in a string.
+    			    int entry_index=0;
+    			    char keys[MAX_CMD_LEN];
+    			    int number_of_keys=0;
+    			    while(entry_index<MAX_RECORDS_PER_TABLE&&table->entry[entry_index].key){
+    			    	int i=0;
+    			    	while(strcmp(predicate_columns[i], "")){
+
+    			    			char col_value[MAX_VALUE_LEN];
+    			    			if(column_value(table->entry[entry_index].value, predicate_indices[i], col_value)){
+    			    				printf("column_value failed :P\n");
+    			    			}
+    			    			if(predicate_operators[i]==1){ //Perform the less-than comparison.
+    			    				if(strcmp(table->datatypes[predicate_indices[i]], "int")){
+    			    					if(atoi(col_value)>=atoi(predicate_values[i])){
+    			    						goto next; //this entry does not meet the requirements, move on to next entry
+    			    					}
+    			    				}
+    			    				else if(strcmp(table->datatypes[predicate_indices[i]], "char")){
+    			    					if(strcmp(col_value, predicate_values[i])>=0){
+    			    						goto next; //this entry does not meet the requirements, move on to next entry
+    			    					}
+    			    				}
+    			    			}
+    			    			else if(predicate_operators[i]==2){//Perform the equals comparison.
+    			    				if(strcmp(table->datatypes[predicate_indices[i]], "int")){
+    			    					if(atoi(col_value)!=atoi(predicate_values[i])){
+    			    						goto next; //this entry does not meet the requirements, move on to next entry
+    			    					}
+    			    				}
+    			    				else if(strcmp(table->datatypes[predicate_indices[i]], "char")){
+    			    					if(strcmp(col_value, predicate_values[i])!=0){
+    			    						goto next; //this entry does not meet the requirements, move on to next entry
+    			    					}
+    			    				}
+    			    			}
+    			    			else if(predicate_operators[i]==3){//Performs the greater-than comparison
+    			    				if(strcmp(table->datatypes[predicate_indices[i]], "int")){
+    			    					if(atoi(col_value)<=atoi(predicate_values[i])){
+    			    						goto next; //this entry does not meet the requirements, move on to next entry
+    			    					}
+    			    				}
+    			    				else if(strcmp(table->datatypes[predicate_indices[i]], "char")){
+    			    					if(strcmp(col_value, predicate_values[i])<=0){
+    			    						goto next; //this entry does not meet the requirements, move on to next entry
+    			    					}
+    			    				}
+    			    			}
+
+    			    	    i++;  //Moves on to the next predicate.
+    			    	}
+    			    	if(number_of_keys<max_keys){
+    			    	    strcat(keys, table->entry[entry_index].key);
+    			    	    strcat(keys, ",");
+    			    	    number_of_keys++;
+    			    	}
+    			        next:
+    			    	entry_index++; //Moves on to the next entry
+    			    }
+
+				if(number_of_keys==0) {
+					errno = ERR_KEY_NOT_FOUND;
+					sprintf(errstr, "%d", errno);
+					strcpy(str, errstr);
+					strcat(str, "0 FAIL\n");
+					sendall(sock, str, strlen(str));
+					return -1;
+				}
+				else
+				    sprintf(str, "0 %d %s\n", number_of_keys, keys);
+				    sendall(sock, str, strlen(str));
+				   return 0;
+			}
+			else {
+				errno = ERR_TABLE_NOT_FOUND;
+					sprintf(errstr, "%d", errno);
+					strcpy(str, errstr);
+					strcat(str, "0 FAIL\n");
+					sendall(sock, str, strlen(str));
+					return -1;
+
+			}
+		}
+	}
